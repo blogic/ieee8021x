@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 2.6)
+
+PROJECT(wired-802.1x C)
+INCLUDE(GNUInstallDirs)
+ADD_DEFINITIONS(-Os -ggdb -Wall -Werror --std=gnu99 -Wmissing-declarations)
+
+SET(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "")
+
+SET(SOURCES main.c)
+SET(LIBS ubox ubus uci)
+
+ADD_EXECUTABLE(wired-802.1x ${SOURCES})
+TARGET_LINK_LIBRARIES(wired-802.1x ${LIBS})
+INSTALL(TARGETS wired-802.1x
+	RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR}
+)

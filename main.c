@@ -20,40 +20,33 @@
 
 struct port {
 	struct avl_node avl;
-	char *network;
 	char *port;
 	uint32_t hapd;
 	struct uloop_fd hapd_fd;
-	uint32_t netifd;
 };
 
 static struct blob_buf b;
 static struct avl_tree port_avl;
 static struct ubus_auto_conn conn;
 static uint32_t hapd_id;
+static uint32_t netifd_id;
 
 static void
-netifd_handle_iface(struct port *port, int add, int force)
+netifd_handle_iface(struct port *port, int add)
 {
 	int ret;
 
-	if (!port->netifd)
-		return;
-
 	blob_buf_init(&b, 0);
 	blobmsg_add_string(&b, "name", port->port);
+	blobmsg_add_u8(&b, "auth_status", add);
 
-	ret = ubus_invoke(&conn.ctx, port->netifd, add ? "add_device" : "remove_device",
+	ret = ubus_invoke(&conn.ctx, netifd_id, "set_state",
 			  b.head, NULL, NULL, 2000);
-	if (force)
-		return;
-
 	if (ret)
-		ULOG_ERR("failed to %s %s to %s (%d/%d)\n",
-			 add ? "add" : "remove", port->port,
-			 port->network, ret, port->netifd);
-	else if (add)
-		ULOG_INFO("%s added to %s\n", port->port, port->network);
+		ULOG_ERR("failed to %sauthenticate %s)\n",
+			 add ? "" : "de-", port->port);
+	else
+		ULOG_INFO("%sauthenticated %s\n", add ? "" : "de-", port->port);
 }
 
 static void
@@ -69,10 +62,10 @@ hostapd_handle_fd(struct uloop_fd *fd, unsigned int events)
 			continue;
 		if (!strncmp(&buf[3], "AP-STA-CONNECTED", 16)) {
 			ULOG_INFO("client connected on %s\n", p->port);
-			netifd_handle_iface(p, 1, 0);
+			netifd_handle_iface(p, 1);
 		} else if (!strncmp(&buf[3], "AP-STA-DISCONNECTED", 19)) {
 			ULOG_INFO("client disconnected on %s\n", p->port);
-			netifd_handle_iface(p, 0, 0);
+			netifd_handle_iface(p, 0);
 		}
 	}
 }
@@ -92,7 +85,7 @@ static void hostapd_write_conf(struct port *port)
 	fprintf(fp, "driver=wired\n");
 	fprintf(fp, "ieee8021x=1\n");
 	fprintf(fp, "eap_server=1\n");
-	fprintf(fp, "eap_user_file=/hostapd-%s.eap_user\n", port->network);
+	fprintf(fp, "eap_user_file=/var/run/hostapd-ieee8021x.eap_user\n");
 	fprintf(fp, "eap_reauth_period=3600\n");
 	fprintf(fp, "ctrl_interface=/var/run/hostapd\n");
 	fprintf(fp, "interface=%s\n", port->port);
@@ -108,8 +101,10 @@ static void hostapd_provide_conf(struct port *port, int add, int force)
 	char *filename;
 	int ret;
 
-	if (!hapd_id)
+	if (!hapd_id) {
+		ULOG_ERR("hapd_id is not known\n");
 		return;
+	}
 
 	if (asprintf(&filename, "/var/run/hostapd-%s.conf", port->port) < 0)
 		return;
@@ -134,14 +129,12 @@ static void hostapd_provide_conf(struct port *port, int add, int force)
 static void config_load_network(struct uci_section *s)
 {
 	enum {
-		IEEE8021X_ATTR_NETWORK,
 		IEEE8021X_ATTR_PORTS,
 		__IEEE8021X_ATTR_MAX,
 	};
 
 	static const struct blobmsg_policy network_attrs[__IEEE8021X_ATTR_MAX] = {
-		[IEEE8021X_ATTR_NETWORK] = { .name = "network", .type = BLOBMSG_TYPE_STRING },
-		[IEEE8021X_ATTR_PORTS] = { .name = "ports", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_PORTS] = { .name = "ports", .type = BLOBMSG_TYPE_ARRAY },
 	};
 
 	const struct uci_blob_param_list network_attr_list = {
@@ -150,47 +143,31 @@ static void config_load_network(struct uci_section *s)
 	};
 
 	struct blob_buf b = {};
-	char *ports, *port, *_port, *network, *_network;
+	char *port, *_port;
 	struct blob_attr *tb[__IEEE8021X_ATTR_MAX] = { 0 };
+	struct blob_attr *a;
 	struct port *p;
+        size_t rem;
 
 	blob_buf_init(&b, 0);
 	uci_to_blob(&b, s, &network_attr_list);
 	blobmsg_parse(network_attrs, __IEEE8021X_ATTR_MAX, tb, blob_data(b.head), blob_len(b.head));
 
-	if (!tb[IEEE8021X_ATTR_NETWORK] || !tb[IEEE8021X_ATTR_PORTS])
+	if (!tb[IEEE8021X_ATTR_PORTS])
 		return;
 
-	network = blobmsg_get_string(tb[IEEE8021X_ATTR_NETWORK]);
-	ports = blobmsg_get_string(tb[IEEE8021X_ATTR_PORTS]);
-
-	port = strtok(ports, " ");
-	while (port) {
-		char *obj;
-		uint32_t id = 0;
-
-		if (asprintf(&obj, "network.interface.%s", network) < 0)
-			goto next;
-		ubus_lookup_id(&conn.ctx, obj, &id);
-		if (!id)
-			ULOG_ERR("failed to lookup %s\n", obj);
-		free(obj);
-		p = calloc_a(sizeof(*p),
-			     &_network, strlen(network) + 1,
-			     &_port, strlen(port) + 1);
-		strcpy(_network, network);
+	blobmsg_for_each_attr(a, tb[IEEE8021X_ATTR_PORTS], rem) {
+		port = blobmsg_get_string(a);
+		p = calloc_a(sizeof(*p), &_port, strlen(port) + 1);
 		strcpy(_port, port);
 		p->port = _port;
-		p->network = _network;
-		p->netifd = id;
 		p->avl.key = _port;
 		avl_insert(&port_avl, &p->avl);
 		ULOG_INFO("adding %s\n", port);
 		hostapd_write_conf(p);
-		netifd_handle_iface(p, 0, 1);
+		netifd_handle_iface(p, 0);
 		hostapd_provide_conf(p, 0, 1);
-next:
-		port = strtok(NULL, " ");
+		hostapd_provide_conf(p, 1, 0);
 	}
 	blob_buf_free(&b);
 }
@@ -224,26 +201,19 @@ static void cleanup(void)
 	avl_for_each_element(&port_avl, port, avl) {
 		ULOG_INFO("shutting down %s\n", port->port);
 		hostapd_provide_conf(port, 0, 1);
-		netifd_handle_iface(port, 0, 1);
+		netifd_handle_iface(port, 0);
 	}
 }
 
 static void
 netifd_event(const char *type, const char *path, uint32_t id)
 {
-	struct port *port;
-
-	avl_for_each_element(&port_avl, port, avl) {
-		if (strcmp(port->network, &path[18]))
-			continue;
-
-		if (!strcmp("ubus.object.add", type)) {
-			ULOG_INFO("%s - found netifd\n", port->port);
-			port->netifd = id;
-		} else if (!strcmp("ubus.object.remove", type)) {
-			ULOG_INFO("%s - lost netifd\n", port->port);
-			port->netifd = 0;
-		}
+	if (!strcmp("ubus.object.add", type)) {
+		ULOG_INFO("found netifd\n");
+		netifd_id = id;
+	} else if (!strcmp("ubus.object.remove", type)) {
+		ULOG_INFO(" lost netifd\n");
+		netifd_id = 0;
 	}
 }
 
@@ -253,7 +223,6 @@ hostapd_event(const char *type, uint32_t id)
 	if (!strcmp("ubus.object.add", type)) {
 		ULOG_INFO("found hostapd\n");
 		hapd_id = id;
-		config_load();
 	} else if (!strcmp("ubus.object.remove", type)) {
 		ULOG_INFO("lost hostapd\n");
 		hapd_id = 0;
@@ -315,7 +284,7 @@ out:
 			close(p->hapd_fd.fd);
 			uloop_fd_delete(&p->hapd_fd);
 			p->hapd_fd.fd = 0;
-			netifd_handle_iface(p, 0, 1);
+			netifd_handle_iface(p, 0);
 		}
 		hostapd_provide_conf(p, 0, 0);
 	}
@@ -358,7 +327,7 @@ ubus_event(struct ubus_context *ctx,  struct ubus_event_handler *ev,
 		return;
 	}
 
-	if (!strncmp(path, "network.interface.", 18)) {
+	if (!strncmp(path, "network.device", 18)) {
 		netifd_event(type, path, id);
 		return;
 	}
@@ -369,11 +338,18 @@ static struct ubus_event_handler status_handler = { .cb = ubus_event };
 static void
 ubus_connect_handler(struct ubus_context *ctx)
 {
+	ULOG_INFO("connected to ubus");
 	ubus_register_event_handler(ctx, &status_handler, "ubus.object.add");
 	ubus_register_event_handler(ctx, &status_handler, "ubus.object.remove");
 
 	ubus_lookup_id(ctx, "hostapd", &hapd_id);
-	hostapd_event(hapd_id ? "ubus.object.add" : "ubus.object.remove", hapd_id);
+	ULOG_INFO("hostapd id %d", hapd_id);
+	//hostapd_event(hapd_id ? "ubus.object.add" : "ubus.object.remove", hapd_id);
+
+	ubus_lookup_id(ctx, "network.device", &netifd_id);
+	ULOG_INFO("netifd id %d", netifd_id);
+
+	config_load();
 }
 
 static void

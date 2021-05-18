@@ -134,35 +134,35 @@ static void hostapd_provide_conf(struct port *port, int add, int force)
 static void config_load_network(struct uci_section *s)
 {
 	enum {
-		WIRED1X_ATTR_NETWORK,
-		WIRED1X_ATTR_PORTS,
-		__WIRED1X_ATTR_MAX,
+		IEEE8021X_ATTR_NETWORK,
+		IEEE8021X_ATTR_PORTS,
+		__IEEE8021X_ATTR_MAX,
 	};
 
-	static const struct blobmsg_policy network_attrs[__WIRED1X_ATTR_MAX] = {
-		[WIRED1X_ATTR_NETWORK] = { .name = "network", .type = BLOBMSG_TYPE_STRING },
-		[WIRED1X_ATTR_PORTS] = { .name = "ports", .type = BLOBMSG_TYPE_STRING },
+	static const struct blobmsg_policy network_attrs[__IEEE8021X_ATTR_MAX] = {
+		[IEEE8021X_ATTR_NETWORK] = { .name = "network", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_PORTS] = { .name = "ports", .type = BLOBMSG_TYPE_STRING },
 	};
 
 	const struct uci_blob_param_list network_attr_list = {
-		.n_params = __WIRED1X_ATTR_MAX,
+		.n_params = __IEEE8021X_ATTR_MAX,
 		.params = network_attrs,
 	};
 
 	struct blob_buf b = {};
 	char *ports, *port, *_port, *network, *_network;
-	struct blob_attr *tb[__WIRED1X_ATTR_MAX] = { 0 };
+	struct blob_attr *tb[__IEEE8021X_ATTR_MAX] = { 0 };
 	struct port *p;
 
 	blob_buf_init(&b, 0);
 	uci_to_blob(&b, s, &network_attr_list);
-	blobmsg_parse(network_attrs, __WIRED1X_ATTR_MAX, tb, blob_data(b.head), blob_len(b.head));
+	blobmsg_parse(network_attrs, __IEEE8021X_ATTR_MAX, tb, blob_data(b.head), blob_len(b.head));
 
-	if (!tb[WIRED1X_ATTR_NETWORK] || !tb[WIRED1X_ATTR_PORTS])
+	if (!tb[IEEE8021X_ATTR_NETWORK] || !tb[IEEE8021X_ATTR_PORTS])
 		return;
 
-	network = blobmsg_get_string(tb[WIRED1X_ATTR_NETWORK]);
-	ports = blobmsg_get_string(tb[WIRED1X_ATTR_PORTS]);
+	network = blobmsg_get_string(tb[IEEE8021X_ATTR_NETWORK]);
+	ports = blobmsg_get_string(tb[IEEE8021X_ATTR_PORTS]);
 
 	port = strtok(ports, " ");
 	while (port) {
@@ -189,7 +189,6 @@ static void config_load_network(struct uci_section *s)
 		hostapd_write_conf(p);
 		netifd_handle_iface(p, 0, 1);
 		hostapd_provide_conf(p, 0, 1);
-		hostapd_provide_conf(p, 1, 0);
 next:
 		port = strtok(NULL, " ");
 	}
@@ -203,7 +202,7 @@ static void config_load(void)
 
 	avl_init(&port_avl, avl_strcmp, false, NULL);
 
-	if (!uci_load(uci, "wired1x", &package)) {
+	if (!uci_load(uci, "ieee8021x", &package)) {
 		struct uci_element *e;
 
 		uci_foreach_element(&package->sections, e) {
@@ -386,7 +385,7 @@ signal_shutdown(int signal)
 
 int main(int argc, char **argv)
 {
-	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "wired-802.1x");
+	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "ieee8021x");
 
 	uloop_init();
 

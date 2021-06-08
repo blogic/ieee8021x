@@ -30,6 +30,10 @@ static struct avl_tree port_avl;
 static struct ubus_auto_conn conn;
 static uint32_t hapd_id;
 static uint32_t netifd_id;
+static char *ca;
+static char *key;
+static char *cert;
+static char *identity;
 
 static void
 netifd_handle_iface(struct port *port, int add)
@@ -89,6 +93,12 @@ static void hostapd_write_conf(struct port *port)
 	fprintf(fp, "eap_reauth_period=3600\n");
 	fprintf(fp, "ctrl_interface=/var/run/hostapd\n");
 	fprintf(fp, "interface=%s\n", port->port);
+	if (ca)
+		fprintf(fp, "ca_cert=%s\n", ca);
+	if (cert)
+		fprintf(fp, "server_cert=%s\n", cert);
+	if (key)
+		fprintf(fp, "private_key=%s\n", key);
 
 	fclose(fp);
 
@@ -172,6 +182,47 @@ static void config_load_network(struct uci_section *s)
 	blob_buf_free(&b);
 }
 
+static void config_load_certificates(struct uci_section *s)
+{
+	enum {
+		IEEE8021X_ATTR_CA,
+		IEEE8021X_ATTR_CERT,
+		IEEE8021X_ATTR_KEY,
+		IEEE8021X_ATTR_ID,
+		__IEEE8021X_ATTR_MAX,
+	};
+
+	static const struct blobmsg_policy network_attrs[__IEEE8021X_ATTR_MAX] = {
+		[IEEE8021X_ATTR_CA] = { .name = "ca", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_CERT] = { .name = "cert", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_KEY] = { .name = "key", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_ID] = { .name = "identity", .type = BLOBMSG_TYPE_STRING },
+	};
+
+	const struct uci_blob_param_list network_attr_list = {
+		.n_params = __IEEE8021X_ATTR_MAX,
+		.params = network_attrs,
+	};
+
+	struct blob_attr *tb[__IEEE8021X_ATTR_MAX] = { 0 };
+
+	blob_buf_init(&b, 0);
+	uci_to_blob(&b, s, &network_attr_list);
+	blobmsg_parse(network_attrs, __IEEE8021X_ATTR_MAX, tb, blob_data(b.head), blob_len(b.head));
+
+	if (tb[IEEE8021X_ATTR_CA])
+		ca = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_CA]));
+
+	if (tb[IEEE8021X_ATTR_CERT])
+		cert = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_CERT]));
+
+	if (tb[IEEE8021X_ATTR_KEY])
+		key = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_KEY]));
+
+	if (tb[IEEE8021X_ATTR_ID])
+		identity = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_ID]));
+}
+
 static void config_load(void)
 {
 	struct uci_context *uci = uci_alloc_context();
@@ -187,6 +238,9 @@ static void config_load(void)
 
 			if (!strcmp(s->type, "network"))
 				config_load_network(s);
+
+			if (!strcmp(s->type, "certificates"))
+				config_load_certificates(s);
 		}
 	}
 
@@ -344,7 +398,6 @@ ubus_connect_handler(struct ubus_context *ctx)
 
 	ubus_lookup_id(ctx, "hostapd", &hapd_id);
 	ULOG_INFO("hostapd id %d", hapd_id);
-	//hostapd_event(hapd_id ? "ubus.object.add" : "ubus.object.remove", hapd_id);
 
 	ubus_lookup_id(ctx, "network.device", &netifd_id);
 	ULOG_INFO("netifd id %d", netifd_id);

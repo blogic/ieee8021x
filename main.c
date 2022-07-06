@@ -64,7 +64,8 @@ hostapd_handle_fd(struct uloop_fd *fd, unsigned int events)
 		// fprintf(stderr, "RX %d %d/%s\n", fd->fd, len, &buf[3]);
 		if (strlen(buf) < 4)
 			continue;
-		if (!strncmp(&buf[3], "AP-STA-CONNECTED", 16)) {
+		if (!strncmp(&buf[3], "AP-STA-CONNECTED", 16) ||
+		    !strncmp(&buf[3], "CTRL-EVENT-EAP-SUCCESS", 22)) {
 			ULOG_INFO("client connected on %s\n", p->port);
 			netifd_handle_iface(p, 1);
 		} else if (!strncmp(&buf[3], "AP-STA-DISCONNECTED", 19)) {

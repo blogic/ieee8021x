@@ -25,6 +25,20 @@ struct port {
 	struct uloop_fd hapd_fd;
 };
 
+struct account_info {
+	char *addr;
+	int port;
+	char *secret;
+};
+
+struct radius_info {
+	int enabled;
+	char *nas_identifier;
+	struct account_info auth;
+	struct account_info acct;
+	struct account_info coa;
+};
+
 static struct blob_buf b;
 static struct avl_tree port_avl;
 static struct ubus_auto_conn conn;
@@ -34,6 +48,7 @@ static char *ca;
 static char *key;
 static char *cert;
 static char *identity;
+static struct radius_info radius;
 
 static void
 netifd_handle_iface(struct port *port, int add)
@@ -89,11 +104,34 @@ static void hostapd_write_conf(struct port *port)
 
 	fprintf(fp, "driver=wired\n");
 	fprintf(fp, "ieee8021x=1\n");
-	fprintf(fp, "eap_server=1\n");
-	fprintf(fp, "eap_user_file=/var/run/hostapd-ieee8021x.eap_user\n");
 	fprintf(fp, "eap_reauth_period=3600\n");
 	fprintf(fp, "ctrl_interface=/var/run/hostapd\n");
 	fprintf(fp, "interface=%s\n", port->port);
+	if (radius.enabled) {
+		fprintf(fp, "dynamic_own_ip_addr=1\n");
+		fprintf(fp, "dump_file=/tmp/hostapd.dump\n");
+		if(radius.nas_identifier)
+			fprintf(fp, "nas_identifier=%s\n", radius.nas_identifier);
+		if(radius.auth.addr)
+			fprintf(fp, "auth_server_addr=%s\n", radius.auth.addr);
+		if(radius.auth.port)
+			fprintf(fp, "auth_server_port=%d\n", radius.auth.port);
+		if(radius.auth.secret)
+			fprintf(fp, "auth_server_shared_secret=%s\n", radius.auth.secret);
+		if(radius.acct.addr)
+			fprintf(fp, "acct_server_addr=%s\n", radius.acct.addr);
+		if(radius.acct.port)
+			fprintf(fp, "acct_server_port=%d\n", radius.acct.port);
+		if(radius.auth.secret)
+			fprintf(fp, "acct_server_shared_secret=%s\n", radius.acct.secret);
+		if(radius.coa.addr)
+			fprintf(fp, "radius_das_port=%d\n", radius.coa.port);
+		if(radius.coa.addr && radius.coa.secret )
+			fprintf(fp, "radius_das_client=%s %s\n", radius.coa.addr, radius.coa.secret);
+	} else {
+		fprintf(fp, "eap_server=1\n");
+		fprintf(fp, "eap_user_file=/var/run/hostapd-ieee8021x.eap_user\n");
+	}
 	if (ca)
 		fprintf(fp, "ca_cert=%s\n", ca);
 	if (cert)
@@ -224,6 +262,78 @@ static void config_load_certificates(struct uci_section *s)
 		identity = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_ID]));
 }
 
+static void config_load_radius(struct uci_section *s)
+{
+	enum {
+		IEEE8021X_ATTR_NAS_IDENTIFIER,
+		IEEE8021X_ATTR_AUTH_SERVER_ADDR,
+		IEEE8021X_ATTR_AUTH_SERVER_PORT,
+		IEEE8021X_ATTR_AUTH_SERVER_SECRET,
+		IEEE8021X_ATTR_ACCT_SERVER_ADDR,
+		IEEE8021X_ATTR_ACCT_SERVER_PORT,
+		IEEE8021X_ATTR_ACCT_SERVER_SECRET,
+		IEEE8021X_ATTR_COA_SERVER_ADDR,
+		IEEE8021X_ATTR_COA_SERVER_PORT,
+		IEEE8021X_ATTR_COA_SERVER_SECRET,
+		__IEEE8021X_ATTR_MAX,
+	};
+
+	static const struct blobmsg_policy radius_attrs[__IEEE8021X_ATTR_MAX] = {
+		[IEEE8021X_ATTR_NAS_IDENTIFIER] = { .name = "nas_identifier", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_AUTH_SERVER_ADDR] = { .name = "auth_server_addr", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_AUTH_SERVER_PORT] = { .name = "auth_server_port", .type = BLOBMSG_TYPE_INT32 },
+		[IEEE8021X_ATTR_AUTH_SERVER_SECRET] = { .name = "auth_server_secret", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_ACCT_SERVER_ADDR] = { .name = "acct_server_addr", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_ACCT_SERVER_PORT] = { .name = "acct_server_port", .type = BLOBMSG_TYPE_INT32 },
+		[IEEE8021X_ATTR_ACCT_SERVER_SECRET] = { .name = "acct_server_secret", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_COA_SERVER_ADDR] = { .name = "coa_server_addr", .type = BLOBMSG_TYPE_STRING },
+		[IEEE8021X_ATTR_COA_SERVER_PORT] = { .name = "coa_server_port", .type = BLOBMSG_TYPE_INT32 },
+		[IEEE8021X_ATTR_COA_SERVER_SECRET] = { .name = "coa_server_secret", .type = BLOBMSG_TYPE_STRING },
+	};
+
+	const struct uci_blob_param_list radius_attr_list = {
+		.n_params = __IEEE8021X_ATTR_MAX,
+		.params = radius_attrs,
+	};
+
+	struct blob_attr *tb[__IEEE8021X_ATTR_MAX] = { 0 };
+
+	blob_buf_init(&b, 0);
+	uci_to_blob(&b, s, &radius_attr_list);
+	blobmsg_parse(radius_attrs, __IEEE8021X_ATTR_MAX, tb, blob_data(b.head), blob_len(b.head));
+
+	radius.enabled = 1;
+	if (tb[IEEE8021X_ATTR_NAS_IDENTIFIER])
+		radius.nas_identifier = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_NAS_IDENTIFIER]));
+
+	if (tb[IEEE8021X_ATTR_AUTH_SERVER_ADDR])
+		radius.auth.addr = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_AUTH_SERVER_ADDR]));
+
+	if (tb[IEEE8021X_ATTR_AUTH_SERVER_PORT])
+		radius.auth.port = blobmsg_get_u32(tb[IEEE8021X_ATTR_AUTH_SERVER_PORT]);
+
+	if (tb[IEEE8021X_ATTR_AUTH_SERVER_SECRET])
+		radius.auth.secret = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_AUTH_SERVER_SECRET]));
+
+	if (tb[IEEE8021X_ATTR_ACCT_SERVER_ADDR])
+		radius.acct.addr = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_ACCT_SERVER_ADDR]));
+
+	if (tb[IEEE8021X_ATTR_ACCT_SERVER_PORT])
+		radius.acct.port = blobmsg_get_u32(tb[IEEE8021X_ATTR_ACCT_SERVER_PORT]);
+
+	if (tb[IEEE8021X_ATTR_ACCT_SERVER_SECRET])
+		radius.acct.secret = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_ACCT_SERVER_SECRET]));
+
+	if (tb[IEEE8021X_ATTR_COA_SERVER_ADDR])
+		radius.coa.addr = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_COA_SERVER_ADDR]));
+
+	if (tb[IEEE8021X_ATTR_COA_SERVER_PORT])
+		radius.coa.port = blobmsg_get_u32(tb[IEEE8021X_ATTR_COA_SERVER_PORT]);
+
+	if (tb[IEEE8021X_ATTR_COA_SERVER_SECRET])
+		radius.coa.secret = strdup(blobmsg_get_string(tb[IEEE8021X_ATTR_COA_SERVER_SECRET]));
+}
+
 static void config_load(void)
 {
 	struct uci_context *uci = uci_alloc_context();
@@ -242,6 +352,9 @@ static void config_load(void)
 
 			if (!strcmp(s->type, "certificates"))
 				config_load_certificates(s);
+
+			if (!strcmp(s->type, "radius"))
+				config_load_radius(s);
 		}
 	}
 
